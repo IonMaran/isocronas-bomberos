@@ -1,59 +1,170 @@
-<!DOCTYPE html>
-<html>
-<head>
-    
-    <meta http-equiv="content-type" content="text/html; charset=UTF-8" />
-    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.js"></script>
-    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.js"></script>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.3/dist/leaflet.css"/>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css"/>
-    <link rel="stylesheet" href="https://netdna.bootstrapcdn.com/bootstrap/3.0.0/css/bootstrap-glyphicons.css"/>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.2.0/css/all.min.css"/>
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/Leaflet.awesome-markers/2.0.2/leaflet.awesome-markers.css"/>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/python-visualization/folium/folium/templates/leaflet.awesome.rotate.min.css"/>
-    
-            <meta name="viewport" content="width=device-width,
-                initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
-            <style>
-                #map_39ac7f7cd8dee9918a61395f85949dfd {
-                    position: relative;
-                    width: 100.0%;
-                    height: 100.0%;
-                    left: 0.0%;
-                    top: 0.0%;
-                }
-                .leaflet-container { font-size: 1rem; }
-            </style>
+import flet as ft
+import requests
+import folium
+from folium import plugins
+import webbrowser
+import os
+import json
 
-            <style>html, body {
-                width: 100%;
-                height: 100%;
-                margin: 0;
-                padding: 0;
-            }
-            </style>
+API_KEY = "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjUwMTJjMTg0YTI4YjQyOGM4ZmM5YjY2MDYyMzJkZjczIiwiaCI6Im11cm11cjY0In0="
 
-            <style>#map {
-                position:absolute;
-                top:0;
-                bottom:0;
-                right:0;
-                left:0;
-                }
-            </style>
+# Todos los parques de Navarra
+parques_bomberos = {
+    "Trinitarios": [-1.6533, 42.8242], 
+    "Cordovilla": [-1.6433, 42.7947],
+    "Estella": [-2.0298, 42.6685],
+    "Tafalla": [-1.6780, 42.5283],
+    "Oronoz": [-1.6091, 43.1389],
+    "Alsasua": [-2.1660, 42.8950],
+    "Sangüesa": [-1.2820, 42.5760],
+    "Burguete": [-1.3320, 42.9890],
+    "Navascués": [-1.1150, 42.7150],
+    "Peralta": [-1.7980, 42.3390],
+    "Tudela": [-1.6193, 42.0664],
+    "Lodosa": [-2.0711, 42.4183]
+}
 
-            <script>
-                L_NO_TOUCH = false;
-                L_DISABLE_3D = false;
-            </script>
+def main(page: ft.Page):
+    page.title = "Centro de Mando - Isócronas Navarra"
+    page.theme_mode = ft.ThemeMode.LIGHT
+    page.padding = 40
+    page.window_width = 750
+    page.window_height = 450
 
+    texto_estado = ft.Text("Haz clic para generar el mapa táctico completo.", size=16, text_align=ft.TextAlign.CENTER)
+    progreso = ft.ProgressRing(visible=False)
+    icono_exito = ft.Icon(name=ft.icons.MAP, color=ft.colors.BLUE, size=80, visible=False)
+
+    def generar_mapa_maestro(e):
+        icono_exito.visible = False
+        progreso.visible = True
         
-</head>
-<body>
-    
-    
+        # Mapa base
+        mapa = folium.Map(
+            location=[42.65, -1.65], 
+            zoom_start=9,
+            min_zoom=9,
+            max_bounds=[[41.7, -2.9], [43.4, -0.2]],
+            tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}',
+            attr='Esri'
+        )
+
+        # -------------------------------------------------------------------
+        # HERRAMIENTAS TÁCTICAS DE CAMPO (GPS Y BUSCADOR)
+        # -------------------------------------------------------------------
+        
+        # 1. Buscador de Direcciones (Lupa)
+        plugins.Geocoder(
+            position="topleft",
+            add_marker=True
+        ).add_to(mapa)
+
+        # 2. Botón de Geolocalización GPS (Diana)
+        plugins.LocateControl(
+            position="topleft",
+            drawCircle=True,  # Dibuja un círculo mostrando el margen de error del GPS
+            flyTo=True,       # Hace una animación de vuelo hasta la posición
+            strings={"title": "Centrar en mi ubicación actual", "popup": "Tu posición GPS"}
+        ).add_to(mapa)
+
+        # -------------------------------------------------------------------
+
+        # 1. DESCARGA Y CREACIÓN DE LA MÁSCARA EN PYTHON (Automático)
+        texto_estado.value = "Paso 1: Descargando fronteras oficiales de Navarra..."
+        page.update()
+        
+        try:
+            nom_url = "https://nominatim.openstreetmap.org/search?state=Navarra&country=Spain&polygon_geojson=1&format=json"
+            nom_headers = {'User-Agent': 'BomberosNavarra/1.0'}
+            nom_resp = requests.get(nom_url, headers=nom_headers)
+            
+            if nom_resp.status_code == 200 and len(nom_resp.json()) > 0:
+                navarra_geom = nom_resp.json()[0]['geojson']
+                mundo = [[-180, -90], [-180, 90], [180, 90], [180, -90], [-180, -90]]
+                mascara_coords = [mundo]
+                
+                if navarra_geom['type'] == 'Polygon':
+                    mascara_coords.append(navarra_geom['coordinates'][0])
+                elif navarra_geom['type'] == 'MultiPolygon':
+                    for poly in navarra_geom['coordinates']:
+                        mascara_coords.append(poly[0])
+                
+                mascara_geojson = {
+                    "type": "Feature",
+                    "geometry": {
+                        "type": "Polygon",
+                        "coordinates": mascara_coords
+                    }
+                }
+                
+                folium.GeoJson(
+                    mascara_geojson,
+                    name="Máscara Exterior",
+                    style_function=lambda x: {
+                        'fillColor': '#ffffff',
+                        'color': '#555555', 
+                        'weight': 2,
+                        'fillOpacity': 0.95 
+                    }
+                ).add_to(mapa)
+        except Exception as ex:
+            print("No se pudo cargar la máscara:", ex)
+
+        # 2. PROCESAR PARQUES E ISÓCRONAS
+        texto_estado.value = "Paso 2: Consultando redes viarias a los parques..."
+        page.update()
+
+        URL_ISOCHRONES = "https://api.openrouteservice.org/v2/isochrones/driving-hgv"
+        headers = {
+            'Accept': 'application/json, application/geo+json',
+            'Authorization': API_KEY,
+            'Content-Type': 'application/json; charset=utf-8'
+        }
+
+        for nombre_parque, coordenadas in parques_bomberos.items():
+            body = {
+                "locations": [coordenadas],
+                "range": [300, 600, 1200, 1800, 2400, 3000, 3600], 
+                "range_type": "time"
+            }
+
+            try:
+                response = requests.post(URL_ISOCHRONES, json=body, headers=headers)
+                if response.status_code == 200:
+                    geojson_data = response.json()
+                    
+                    for feature in geojson_data['features']:
+                        tiempo_segundos = feature['properties']['value']
+                        tiempo_minutos = int(tiempo_segundos / 60)
+                        
+                        nombre_capa = f"{nombre_parque}: {tiempo_minutos} min"
+                        capa = folium.FeatureGroup(name=nombre_capa, show=False)
+                        
+                        colores = {
+                            300: '#00b050', 600: '#92d050', 1200: '#ffff00', 
+                            1800: '#ffc000', 2400: '#ff7000', 3000: '#ff0000', 3600: '#800000'
+                        }
+                        color_hex = colores.get(tiempo_segundos, '#000000') 
+                        
+                        folium.GeoJson(
+                            feature, 
+                            style_function=lambda x, c=color_hex: {'fillColor': c, 'color': c, 'weight': 1.2, 'fillOpacity': 0.4}
+                        ).add_to(capa)
+                        
+                        capa.add_to(mapa)
+
+                    folium.Marker(
+                        [coordenadas[1], coordenadas[0]], 
+                        popup=f"<b>Parque {nombre_parque}</b>", 
+                        icon=folium.Icon(color="red", icon="fire")
+                    ).add_to(mapa)
+
+            except Exception as ex:
+                print(f"Error procesando {nombre_parque}: {ex}")
+
+        folium.LayerControl(collapsed=False).add_to(mapa)
+
+        leyenda_html = '''
         <div style="position: fixed; bottom: 30px; left: 30px; width: 160px; height: 230px; 
                     border:2px solid grey; z-index:9999; font-size:14px; background-color:white; opacity: 0.9;
                     padding: 10px; border-radius: 8px; box-shadow: 2px 2px 5px rgba(0,0,0,0.3);">
@@ -66,32 +177,35 @@
         <i style="background:#ff0000; width:15px; height:15px; float:left; margin-right:8px; opacity:0.6; border: 1px solid #000;"></i> 40 - 50<br>
         <i style="background:#800000; width:15px; height:15px; float:left; margin-right:8px; opacity:0.6; border: 1px solid #000;"></i> 50 - 60
         </div>
-        
-    
+        '''
+        mapa.get_root().html.add_child(folium.Element(leyenda_html))
+
+        nombres_parques_list = list(parques_bomberos.keys())
+        coords_parques_list = list(parques_bomberos.values())
+        indices_destinos = list(range(1, len(parques_bomberos) + 1))
+
+        js_avanzado = f'''
         <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            
-            var checkMap = setInterval(function() {
+        document.addEventListener('DOMContentLoaded', function() {{
+            var checkMap = setInterval(function() {{
                 var map_obj = null;
-                for (var key in window) {
-                    if (key.startsWith('map_') && window[key] instanceof L.Map) {
+                for (var key in window) {{
+                    if (key.startsWith('map_') && window[key] instanceof L.Map) {{
                         map_obj = window[key];
                         break;
-                    }
-                }
+                    }}
+                }}
                 
-                if (map_obj) {
+                if (map_obj) {{
                     clearInterval(checkMap);
                     
-                    // 1. OCULTAMOS EL MENÚ ORIGINAL
                     var style = document.createElement('style');
-                    style.innerHTML = '.leaflet-control-layers { display: none !important; }';
+                    style.innerHTML = '.leaflet-control-layers {{ display: none !important; }}';
                     document.head.appendChild(style);
                     
-                    // 2. CREAMOS NUESTRO PANEL PERSONALIZADO
-                    var CustomLayerControl = L.Control.extend({
-                        options: { position: 'topright' },
-                        onAdd: function (map) {
+                    var CustomLayerControl = L.Control.extend({{
+                        options: {{ position: 'topright' }},
+                        onAdd: function (map) {{
                             var div = L.DomUtil.create('div', 'custom-layer-control');
                             div.style.backgroundColor = 'white';
                             div.style.padding = '12px';
@@ -106,10 +220,10 @@
 
                             div.innerHTML = '<div style="font-weight:bold; margin-bottom:12px; font-size:15px; text-align:center;">Capas de Isócronas</div>';
 
-                            var parques = ["Trinitarios", "Cordovilla", "Estella", "Tafalla", "Oronoz", "Alsasua", "Sang\u00fcesa", "Burguete", "Navascu\u00e9s", "Peralta", "Tudela", "Lodosa"];
+                            var parques = {json.dumps(nombres_parques_list)};
                             var tiempos = [5, 10, 20, 30, 40, 50, 60];
 
-                            parques.forEach(function(parque) {
+                            parques.forEach(function(parque) {{
                                 var details = document.createElement('details');
                                 details.style.marginBottom = '6px';
                                 details.style.border = '1px solid #ddd';
@@ -128,7 +242,7 @@
                                 listDiv.style.marginTop = '8px';
                                 listDiv.style.paddingLeft = '8px';
 
-                                tiempos.forEach(function(t) {
+                                tiempos.forEach(function(t) {{
                                     var label = document.createElement('label');
                                     label.style.display = 'block';
                                     label.style.cursor = 'pointer';
@@ -140,39 +254,37 @@
                                     cb.value = parque + ": " + t + " min";
                                     cb.style.marginRight = '8px';
                                     
-                                    cb.onchange = function(e) {
+                                    cb.onchange = function(e) {{
                                         var targetName = e.target.value;
                                         var isChecked = e.target.checked;
-                                        
                                         var nativeLabels = document.querySelectorAll('.leaflet-control-layers-overlays label');
-                                        nativeLabels.forEach(function(nl) {
-                                            if (nl.textContent.includes(targetName)) {
+                                        nativeLabels.forEach(function(nl) {{
+                                            if (nl.textContent.includes(targetName)) {{
                                                 var nativeCb = nl.querySelector('input[type="checkbox"]');
-                                                if (nativeCb && nativeCb.checked !== isChecked) {
+                                                if (nativeCb && nativeCb.checked !== isChecked) {{
                                                     nativeCb.click();
-                                                }
-                                            }
-                                        });
-                                    };
+                                                }}
+                                            }}
+                                        }});
+                                    }};
 
                                     label.appendChild(cb);
                                     label.appendChild(document.createTextNode("⏱️ " + t + " min"));
                                     listDiv.appendChild(label);
-                                });
+                                }});
                                 details.appendChild(listDiv);
                                 div.appendChild(details);
-                            });
+                            }});
 
                             return div;
-                        }
-                    });
+                        }}
+                    }});
                     
                     map_obj.addControl(new CustomLayerControl());
                     
-                    // 3. EVENTO DE CÁLCULO DE RUTAS MATRIX (Click en el mapa)
                     document.querySelector('.leaflet-container').style.cursor = 'crosshair';
                     
-                    map_obj.on('click', function(e) {
+                    map_obj.on('click', function(e) {{
                         var lat = e.latlng.lat;
                         var lng = e.latlng.lng;
                         
@@ -181,51 +293,43 @@
                             .setContent("<div style='text-align:center;'>⏳<br><i>Calculando rutas a todos los parques...</i></div>")
                             .openOn(map_obj);
                             
-                        var coords_parques = [[-1.6533, 42.8242], [-1.6433, 42.7947], [-2.0298, 42.6685], [-1.678, 42.5283], [-1.6091, 43.1389], [-2.166, 42.895], [-1.282, 42.576], [-1.332, 42.989], [-1.115, 42.715], [-1.798, 42.339], [-1.6193, 42.0664], [-2.0711, 42.4183]];
+                        var coords_parques = {json.dumps(coords_parques_list)};
                         var ubicaciones = [[lng, lat]].concat(coords_parques);
                         
-                        var data = {
+                        var data = {{
                             "locations": ubicaciones,
                             "sources": [0],
-                            "destinations": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+                            "destinations": {json.dumps(indices_destinos)},
                             "metrics": ["duration"]
-                        };
+                        }};
                         
-                        fetch("https://api.openrouteservice.org/v2/matrix/driving-hgv", {
+                        fetch("https://api.openrouteservice.org/v2/matrix/driving-hgv", {{
                             method: "POST",
-                            headers: {
+                            headers: {{
                                 "Accept": "application/json, application/geo+json",
-                                "Authorization": "eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjUwMTJjMTg0YTI4YjQyOGM4ZmM5YjY2MDYyMzJkZjczIiwiaCI6Im11cm11cjY0In0=",
+                                "Authorization": "{API_KEY}",
                                 "Content-Type": "application/json"
-                            },
+                            }},
                             body: JSON.stringify(data)
-                        })
+                        }})
                         .then(response => response.json())
-                        .then(data => {
-                            if (!data.durations || !data.durations[0]) {
+                        .then(data => {{
+                            if (!data.durations || !data.durations[0]) {{
                                 popup.setContent("Error: No se pudo calcular la ruta.");
                                 return;
-                            }
+                            }}
                             
                             var durations = data.durations[0];
-                            var parques = ["Trinitarios", "Cordovilla", "Estella", "Tafalla", "Oronoz", "Alsasua", "Sang\u00fcesa", "Burguete", "Navascu\u00e9s", "Peralta", "Tudela", "Lodosa"];
-                            
-                            // NUEVO: Creamos una lista con todos los resultados válidos y los ordenamos
+                            var parques = {json.dumps(nombres_parques_list)};
                             var resultados = [];
-                            for (var i = 0; i < durations.length; i++) {
-                                if (durations[i] !== null) {
-                                    resultados.push({
-                                        nombre: parques[i],
-                                        tiempo: durations[i]
-                                    });
-                                }
-                            }
+                            for (var i = 0; i < durations.length; i++) {{
+                                if (durations[i] !== null) {{
+                                    resultados.push({{nombre: parques[i], tiempo: durations[i]}});
+                                }}
+                            }}
                             
-                            if (resultados.length > 0) {
-                                // Ordenamos de menor a mayor tiempo
-                                resultados.sort(function(a, b) {
-                                    return a.tiempo - b.tiempo;
-                                });
+                            if (resultados.length > 0) {{
+                                resultados.sort(function(a, b) {{ return a.tiempo - b.tiempo; }});
                                 
                                 var primero = resultados[0];
                                 var min1 = Math.floor(primero.tiempo / 60);
@@ -236,8 +340,7 @@
                                                  "<span style='color:red; font-size:17px;'><b>" + primero.nombre + "</b></span><br>" + 
                                                  "<b>⏱️ " + min1 + " min " + sec1 + " s</b>";
                                 
-                                // Si hay un segundo parque, calculamos la diferencia y la mostramos
-                                if (resultados.length > 1) {
+                                if (resultados.length > 1) {{
                                     var segundo = resultados[1];
                                     var min2 = Math.floor(segundo.tiempo / 60);
                                     var sec2 = Math.round(segundo.tiempo % 60);
@@ -252,86 +355,78 @@
                                                   "<b>2ª Opción:</b> " + segundo.nombre + "<br>" +
                                                   "⏱️ " + min2 + " min " + sec2 + " s " +
                                                   "<b style='color:#b22222;'>(+" + diff_texto + ")</b></span>";
-                                }
-                                
+                                }}
                                 html_popup += "</div>";
                                 popup.setContent(html_popup);
-                            } else {
+                            }} else {{
                                 popup.setContent("Punto inaccesible para camiones.");
-                            }
-                        })
-                        .catch(error => {
+                            }}
+                        }})
+                        .catch(error => {{
                             popup.setContent("Error de conexión con la API.");
                             console.error(error);
-                        });
-                    });
-                }
-            }, 200);
-        });
+                        }});
+                    }});
+                }}
+            }}, 200);
+        }});
         </script>
-        
-    
-            <div class="folium-map" id="map_39ac7f7cd8dee9918a61395f85949dfd" ></div>
-        
-</body>
-<script>
-    
-    
-            var map_39ac7f7cd8dee9918a61395f85949dfd = L.map(
-                "map_39ac7f7cd8dee9918a61395f85949dfd",
-                {
-                    center: [42.65, -1.65],
-                    crs: L.CRS.EPSG3857,
-                    ...{
-  "zoom": 9,
-  "zoomControl": true,
-  "preferCanvas": false,
-}
+        '''
+        mapa.get_root().html.add_child(folium.Element(js_avanzado))
 
-                }
-            );
-
-            
-
+        archivo_html = "index.html"
+        mapa.save(archivo_html)
+        ruta_absoluta = 'file://' + os.path.realpath(archivo_html)
         
-    
-            var tile_layer_2a75b196a15e7f5426391ecaa96da26f = L.tileLayer(
-                "https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
-                {
-  "minZoom": 0,
-  "maxZoom": 18,
-  "maxNativeZoom": 18,
-  "noWrap": false,
-  "attribution": "Esri",
-  "subdomains": "abc",
-  "detectRetina": false,
-  "tms": false,
-  "opacity": 1,
-}
+        webbrowser.open(ruta_absoluta)
+        
+        progreso.visible = False
+        icono_exito.visible = True
+        texto_estado.value = "¡Mapa con herramientas de campo completado!"
+        page.update()
 
-            );
-        
-    
-            tile_layer_2a75b196a15e7f5426391ecaa96da26f.addTo(map_39ac7f7cd8dee9918a61395f85949dfd);
-        
-    
-            var layer_control_2a6620852ce72f4bc7680a4058ee443c_layers = {
-                base_layers : {
-                    "https://server.arcgisonline.com/arcgis/rest/services/world_street_map/mapserver/tile/{z}/{y}/{x}" : tile_layer_2a75b196a15e7f5426391ecaa96da26f,
-                },
-                overlays :  {
-                },
-            };
-            let layer_control_2a6620852ce72f4bc7680a4058ee443c = L.control.layers(
-                layer_control_2a6620852ce72f4bc7680a4058ee443c_layers.base_layers,
-                layer_control_2a6620852ce72f4bc7680a4058ee443c_layers.overlays,
-                {
-  "position": "topright",
-  "collapsed": false,
-  "autoZIndex": true,
-}
-            ).addTo(map_39ac7f7cd8dee9918a61395f85949dfd);
+    def abrir_mapa_existente(e):
+        archivo_html = "index.html"
+        if os.path.exists(archivo_html):
+            ruta_absoluta = 'file://' + os.path.realpath(archivo_html)
+            webbrowser.open(ruta_absoluta)
+            texto_estado.value = "¡Mapa cargado desde la memoria!"
+            icono_exito.visible = True
+            page.update()
+        else:
+            texto_estado.value = "No hay mapa guardado. Por favor, pulsa 'Recalcular'."
+            page.update()
 
-        
-</script>
-</html>
+    boton_abrir = ft.ElevatedButton(
+        text="Abrir Mapa Táctico (Rápido)",
+        icon=ft.icons.MAP_OUTLINED,
+        on_click=abrir_mapa_existente,
+        width=350, height=60,
+        style=ft.ButtonStyle(color=ft.colors.WHITE, bgcolor=ft.colors.BLUE_700, shape=ft.RoundedRectangleBorder(radius=8))
+    )
+
+    boton_recalcular = ft.TextButton(
+        text="Recalcular con API (Lento)",
+        icon=ft.icons.REFRESH,
+        on_click=generar_mapa_maestro,
+    )
+
+    layout = ft.Column(
+        controls=[
+            ft.Text("Análisis de Cobertura - Bomberos Navarra", size=24, weight=ft.FontWeight.BOLD),
+            ft.Container(height=20),
+            boton_abrir,
+            boton_recalcular,
+            ft.Container(height=30),
+            icono_exito,
+            texto_estado,
+            progreso
+        ],
+        alignment=ft.MainAxisAlignment.CENTER,
+        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+        expand=True
+    )
+
+    page.add(layout)
+
+ft.app(target=main)
